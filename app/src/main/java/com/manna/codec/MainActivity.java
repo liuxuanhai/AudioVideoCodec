@@ -16,15 +16,34 @@ import android.view.ScaleGestureDetector;
 import android.view.View;
 import android.widget.ImageView;
 import android.widget.SeekBar;
+import android.widget.TextView;
+import android.widget.Toast;
 
+import com.arcsoft.face.ActiveFileInfo;
+import com.arcsoft.face.AgeInfo;
+import com.arcsoft.face.ErrorInfo;
+import com.arcsoft.face.Face3DAngle;
+import com.arcsoft.face.FaceEngine;
+import com.arcsoft.face.FaceInfo;
+import com.arcsoft.face.GenderInfo;
+import com.arcsoft.face.LivenessInfo;
+import com.arcsoft.face.enums.DetectMode;
+import com.arcsoft.face.enums.RuntimeABI;
 import com.manna.codec.codec.MediaEncodeManager;
 import com.manna.codec.codec.MediaMuxerChangeListener;
 import com.manna.codec.codec.VideoEncodeRender;
+import com.manna.codec.other.model.DrawInfo;
+import com.manna.codec.other.util.ConfigUtil;
+import com.manna.codec.other.util.DrawHelper;
+import com.manna.codec.other.util.camera.CameraHelper;
+import com.manna.codec.other.util.face.RecognizeColor;
+import com.manna.codec.other.widget.FaceRectView;
 import com.manna.codec.record.AudioCapture;
 import com.manna.codec.scale.ScaleGesture;
 import com.manna.codec.surface.CameraSurfaceView;
 import com.manna.codec.utils.AlphaAnimationUtils;
 import com.manna.codec.utils.ByteUtils;
+import com.manna.codec.utils.Constants;
 import com.manna.codec.utils.FileUtils;
 import com.manna.library_plugin.permission.Permission;
 import com.manna.library_plugin.permission.PermissionConstants;
@@ -32,8 +51,18 @@ import com.manna.library_plugin.permission.PermissionGlobalCallback;
 import com.manna.library_plugin.permission.PermissionManage;
 
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
+
+import io.reactivex.Observable;
+import io.reactivex.ObservableEmitter;
+import io.reactivex.ObservableOnSubscribe;
+import io.reactivex.Observer;
+import io.reactivex.android.schedulers.AndroidSchedulers;
+import io.reactivex.disposables.Disposable;
+import io.reactivex.schedulers.Schedulers;
 
 import static com.manna.codec.utils.DisplayUtils.adjustBrightness;
 
@@ -41,7 +70,7 @@ import static com.manna.codec.utils.DisplayUtils.adjustBrightness;
  * 录像功能 -- 录音+录视频+编解码+合成视频
  */
 public class MainActivity extends AppCompatActivity implements MediaMuxerChangeListener,
-        ScaleGesture.ScaleGestureListener {
+        ScaleGesture.ScaleGestureListener, com.manna.codec.surface.CameraListener {
 
     private final String TAG = "MainActivity.class";
     private CameraSurfaceView cameraSurfaceView;
@@ -68,6 +97,19 @@ public class MainActivity extends AppCompatActivity implements MediaMuxerChangeL
     //默认滤镜 -- 原色， 1 -- 表示黑白
     private int filterType = 0;
 
+    //激活引擎
+    private TextView tvActiveEngine;
+    boolean libraryExists = true;
+    private CameraHelper cameraHelper;
+    private FaceEngine faceEngine;
+    private int afCode = -1;
+    /**
+     * 相机预览显示的控件，可为SurfaceView或TextureView
+     */
+    private FaceRectView faceRectView;
+
+    private static final int ACTION_REQUEST_PERMISSIONS = 0x001;
+
     private Handler calcDecibel = new Handler();
 
     @Override
@@ -86,9 +128,9 @@ public class MainActivity extends AppCompatActivity implements MediaMuxerChangeL
         scaleGestureDetector = new ScaleGestureDetector(this, new ScaleGesture(this));
     }
 
-    @Permission(permissions = {Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA},
-            rationales = {PermissionConstants.AUDIO_RATIONALE, PermissionConstants.CAMERA_RATIONALE},
-            rejects = {PermissionConstants.AUDIO_REJECT, PermissionConstants.CAMERA_REJECT})
+    @Permission(permissions = {Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA, Manifest.permission.READ_PHONE_STATE},
+            rationales = {PermissionConstants.AUDIO_RATIONALE, PermissionConstants.CAMERA_RATIONALE, PermissionConstants.READ_PHONE_RATIONALE},
+            rejects = {PermissionConstants.AUDIO_REJECT, PermissionConstants.CAMERA_REJECT, PermissionConstants.READ_PHONE_REJECT})
     private void init() {
         setContentView(R.layout.activity_main);
 
@@ -97,12 +139,15 @@ public class MainActivity extends AppCompatActivity implements MediaMuxerChangeL
         ivSwitch = findViewById(R.id.iv_switch);
         ivFocus = findViewById(R.id.iv_focus);
         ivFilter = findViewById(R.id.iv_filter);
+        tvActiveEngine = findViewById(R.id.tv_active_engine);
 
         sbScale = findViewById(R.id.sb_scale);
         sbScale.getThumb().setColorFilter(Color.WHITE, PorterDuff.Mode.SRC_ATOP);
         sbScale.getProgressDrawable().setColorFilter(Color.WHITE, PorterDuff.Mode.SRC_ATOP);
 
         cameraSurfaceView = findViewById(R.id.camera_surface_view);
+        cameraSurfaceView.setCameraListener(this);
+        faceRectView = findViewById(R.id.face_rect_view);
 
         audioCapture = new AudioCapture();
 
@@ -200,6 +245,11 @@ public class MainActivity extends AppCompatActivity implements MediaMuxerChangeL
                 setRenderAttr(filterType, new float[]{0.0f, 0.0f, 0.0f});
             }
         });
+
+        //激活引擎
+        tvActiveEngine.setOnClickListener(v -> activeEngine(tvActiveEngine));
+        //初始化引擎
+        initEngine();
     }
 
     /***
@@ -363,4 +413,147 @@ public class MainActivity extends AppCompatActivity implements MediaMuxerChangeL
             return true;
         }
     }
+
+
+    //--------------------------------------------- 人脸检测相关代码 start  --------------------------
+
+    @Override
+    protected void onDestroy() {
+        if (cameraHelper != null) {
+            cameraHelper.release();
+            cameraHelper = null;
+        }
+        unInitEngine();
+        super.onDestroy();
+    }
+
+    public void activeEngine(final View view) {
+        if (!libraryExists) {
+            Toast.makeText(getApplicationContext(), "library_not_found", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (view != null) {
+            view.setClickable(false);
+        }
+        Observable.create(new ObservableOnSubscribe<Integer>() {
+            @Override
+            public void subscribe(ObservableEmitter<Integer> emitter) {
+                RuntimeABI runtimeABI = FaceEngine.getRuntimeABI();
+                Log.i(TAG, "subscribe: getRuntimeABI() " + runtimeABI);
+
+                long start = System.currentTimeMillis();
+                int activeCode = FaceEngine.activeOnline(MainActivity.this, Constants.APP_ID, Constants.SDK_KEY);
+                Log.i(TAG, "subscribe cost: " + (System.currentTimeMillis() - start));
+                emitter.onNext(activeCode);
+            }
+        })
+                .subscribeOn(Schedulers.io())
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe(new Observer<Integer>() {
+                    @Override
+                    public void onSubscribe(Disposable d) {
+
+                    }
+
+                    @Override
+                    public void onNext(Integer activeCode) {
+                        if (activeCode == ErrorInfo.MOK) {
+                            Toast.makeText(getApplicationContext(), "激活成功", Toast.LENGTH_SHORT).show();
+                        } else if (activeCode == ErrorInfo.MERR_ASF_ALREADY_ACTIVATED) {
+                            Toast.makeText(getApplicationContext(), "已激活成功，无需重新激活", Toast.LENGTH_SHORT).show();
+                        } else {
+                            Toast.makeText(getApplicationContext(), "激活失败", Toast.LENGTH_SHORT).show();
+                        }
+
+                        if (view != null) {
+                            view.setClickable(true);
+                        }
+                        ActiveFileInfo activeFileInfo = new ActiveFileInfo();
+                        int res = FaceEngine.getActiveFileInfo(MainActivity.this, activeFileInfo);
+                        if (res == ErrorInfo.MOK) {
+                            Log.i(TAG, activeFileInfo.toString());
+                        }
+
+                    }
+
+                    @Override
+                    public void onError(Throwable e) {
+                        Toast.makeText(getApplicationContext(), e.getMessage(), Toast.LENGTH_SHORT).show();
+                        if (view != null) {
+                            view.setClickable(true);
+                        }
+                    }
+
+                    @Override
+                    public void onComplete() {
+
+                    }
+                });
+
+    }
+
+    private void initEngine() {
+        faceEngine = new FaceEngine();
+        afCode = faceEngine.init(this, DetectMode.ASF_DETECT_MODE_VIDEO, ConfigUtil.getFtOrient(this),
+                16, 20, FaceEngine.ASF_FACE_DETECT | FaceEngine.ASF_AGE | FaceEngine.ASF_FACE3DANGLE | FaceEngine.ASF_GENDER | FaceEngine.ASF_LIVENESS);
+        Log.i(TAG, "initEngine:  init: " + afCode);
+        if (afCode != ErrorInfo.MOK) {
+            Toast.makeText(getApplicationContext(), "引擎初始化失败", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void unInitEngine() {
+        if (afCode == 0) {
+            afCode = faceEngine.unInit();
+            Log.i(TAG, "unInitEngine: " + afCode);
+        }
+    }
+
+    @Override
+    public void onPreview(byte[] nv21, Camera camera, int cameraId) {
+        // when camera open
+        Camera.Size previewSize = camera.getParameters().getPreviewSize();
+        DrawHelper drawHelper = new DrawHelper(previewSize.width, previewSize.height, cameraSurfaceView.getWidth(), cameraSurfaceView.getHeight(),
+                90, cameraId, false, false, false);
+
+        // when camera preview start
+        if (faceRectView != null) {
+            faceRectView.clearFaceInfo();
+        }
+        List<FaceInfo> faceInfoList = new ArrayList<>();
+        int code = faceEngine.detectFaces(nv21, previewSize.width, previewSize.height, FaceEngine.CP_PAF_NV21, faceInfoList);
+        if (code == ErrorInfo.MOK && faceInfoList.size() > 0) {
+            int processMask = FaceEngine.ASF_AGE | FaceEngine.ASF_FACE3DANGLE | FaceEngine.ASF_GENDER | FaceEngine.ASF_LIVENESS;
+            code = faceEngine.process(nv21, previewSize.width, previewSize.height, FaceEngine.CP_PAF_NV21, faceInfoList, processMask);
+            if (code != ErrorInfo.MOK) {
+                return;
+            }
+        } else {
+            return;
+        }
+        List<AgeInfo> ageInfoList = new ArrayList<>();
+        List<GenderInfo> genderInfoList = new ArrayList<>();
+        List<Face3DAngle> face3DAngleList = new ArrayList<>();
+        List<LivenessInfo> faceLivenessInfoList = new ArrayList<>();
+        int ageCode = faceEngine.getAge(ageInfoList);
+        int genderCode = faceEngine.getGender(genderInfoList);
+        int face3DAngleCode = faceEngine.getFace3DAngle(face3DAngleList);
+        int livenessCode = faceEngine.getLiveness(faceLivenessInfoList);
+
+        // 有其中一个的错误码不为ErrorInfo.MOK，return
+        if ((ageCode | genderCode | face3DAngleCode | livenessCode) != ErrorInfo.MOK) {
+            return;
+        }
+        if (faceRectView != null && drawHelper != null) {
+            List<DrawInfo> drawInfoList = new ArrayList<>();
+            for (int i = 0; i < faceInfoList.size(); i++) {
+                drawInfoList.add(new DrawInfo(drawHelper.adjustRect(faceInfoList.get(i).getRect()),
+                        genderInfoList.get(i).getGender(), ageInfoList.get(i).getAge(),
+                        faceLivenessInfoList.get(i).getLiveness(), RecognizeColor.COLOR_UNKNOWN, null));
+            }
+            drawHelper.draw(faceRectView, drawInfoList);
+        }
+    }
+
+    //--------------------------------------------- 人脸检测相关代码 end  --------------------------
 }

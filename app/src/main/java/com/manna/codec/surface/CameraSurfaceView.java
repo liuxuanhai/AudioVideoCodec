@@ -17,10 +17,13 @@ public class CameraSurfaceView extends EglSurfaceView implements CameraFBORender
 
     private CameraManager cameraManager;
     private CameraFBORender render;
-    private int cameraId = Camera.CameraInfo.CAMERA_FACING_BACK;
+    //    private int cameraId = Camera.CameraInfo.CAMERA_FACING_BACK;
+    private int cameraId = Camera.CameraInfo.CAMERA_FACING_FRONT;
     private int textureId;
 
     private Context context;
+    //测试
+    private CameraListener cameraListener;
 
     public CameraSurfaceView(Context context) {
         this(context, null);
@@ -46,6 +49,7 @@ public class CameraSurfaceView extends EglSurfaceView implements CameraFBORender
 
     @Override
     public void onSurfaceCreate(SurfaceTexture surfaceTexture, int fboTextureId) {
+        cameraManager.setCameraListener(getCameraListener());
         cameraManager.startCamera(surfaceTexture, cameraId);
         this.textureId = fboTextureId;
     }
@@ -165,5 +169,13 @@ public class CameraSurfaceView extends EglSurfaceView implements CameraFBORender
 
     public float[] getColor() {
         return render.getColor();
+    }
+
+    public CameraListener getCameraListener() {
+        return cameraListener;
+    }
+
+    public void setCameraListener(CameraListener cameraListener) {
+        this.cameraListener = cameraListener;
     }
 }

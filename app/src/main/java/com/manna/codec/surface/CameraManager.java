@@ -35,6 +35,10 @@ public class CameraManager {
 
     private int defaultCameraId = 0;
 
+
+    //测试
+    CameraListener cameraListener;
+
     public CameraManager(Context context) {
         this.context = context;
         this.screenWidth = DisplayUtils.getScreenWidth(context);
@@ -77,6 +81,14 @@ public class CameraManager {
 
             camera.setParameters(parameters);
             camera.startPreview();
+            camera.setPreviewCallback(new Camera.PreviewCallback() {
+                @Override
+                public void onPreviewFrame(byte[] data, Camera camera) {
+                    if (cameraListener != null) {
+                        cameraListener.onPreview(data, camera, cameraId);
+                    }
+                }
+            });
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -266,5 +278,13 @@ public class CameraManager {
             return -1;
         }
         return parameters.getMaxZoom();
+    }
+
+    public void setCameraListener(CameraListener cameraListener) {
+        this.cameraListener = cameraListener;
+    }
+
+    public CameraListener getCameraListener() {
+        return cameraListener;
     }
 }
