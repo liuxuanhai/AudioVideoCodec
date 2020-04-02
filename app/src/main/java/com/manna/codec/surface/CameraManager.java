@@ -68,13 +68,14 @@ public class CameraManager {
             }
             Camera.Size size = getCameraSize(parameters.getSupportedPreviewSizes(), screenWidth,
                     screenHeight, 0.1f);
+
             parameters.setPreviewSize(size.width, size.height);
             //水平方向未旋转，所以宽就是竖直方向的高，对应旋转操作
             Log.d(TAG, "startCamera: 预览宽:" + size.width + " -- " + "预览高:" + size.height);
             previewWidth = size.width;
             previewHeight = size.height;
 
-            size = getCameraSize(parameters.getSupportedPictureSizes(), screenWidth, screenHeight, 0.1f);
+            // size = getCameraSize(parameters.getSupportedPictureSizes(), screenWidth, screenHeight, 0.1f);
             parameters.setPictureSize(size.width, size.height);
             //水平方向未旋转，所以宽就是竖直方向的高
             Log.d(TAG, "startCamera: 图片宽:" + size.width + " -- " + "图片高:" + size.height);
